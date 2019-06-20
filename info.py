@@ -1,7 +1,10 @@
 import codecs
 import json
+import time
 import operator
 import jieba
+from collections import Counter
+from DialogueClassification import predict_character
 
 LOCATION = 0
 CHARACTER = 1
@@ -10,26 +13,70 @@ sentence_delimiters = ['?', '!', ';', '？', '！', '。', '；', '……', '…
 jieba.set_dictionary('data/dict.txt.big')
 class Scene:
     def __init__(self, text):
+        self.locations_distribution_dict = {}
         self.load_dict()
-        self.text = text.replace('\n', '').replace('\r\r', '').replace('」「', '」\n「')
+        print('#####scene')
+        print(text)
+        print('#####scene')
+        #self.text = text.replace('\n', '').replace('」「', '」\n「')
+        self.text = text.split('\n')
+        print(self.text)
         self.tags = self.init_tag()
-        self.sentences, self.tags = self.sentences_segment()
+        print(self.tags)
+        #self.sentences, self.tags = self.sentences_segment()
+        #print(self.sentences)
+        #print(self.tags)
+        self.sentences = self.text
         self.tags = self.item_tag('PER', self.nr)
         self.tags = self.item_tag('LOC', self.ns)
         self.locations_dict = {}
+	#self.sorted_locations_distribution_dict = {}
         self.scene_character = []
         self.scene_location = ''
         self.scene_content = []
 
         for sentence, tag in zip(self.sentences, self.tags):
             #print(sentence)
+            dialogues = []
+            diag = ''
+            action = ''
+            tmp_contents = []
+
             if 'D' not in tag:
                 self.scene_content.append(['action', sentence])
+            else:
+                for i in range(len(sentence)-1):
+                    if tag[i] == 'D':
+                        if tag[i+1] == 'D-E' and sentence[i] == '，':
+                            diag += sentence[i]
+                        elif tag[i+1] == 'D-E':
+                            diag += sentence[i]
+                            dialogues.append(diag)
+                            tmp_contents.append(['actor', diag])
+                            diag = ''
+                        else:
+                            diag += sentence[i]
+                    elif tag[i] != 'D' and tag[i] != 'D-S' and tag[i] != 'D-E' and tag[i] != 'O-E':
+                        if tag[i+1] == 'O-E':
+                            action += sentence[i]+sentence[i+1]
+                            if '說' not in action:
+                                tmp_contents.append(['action',action])
+                            action = ''
+                        elif sentence[i] == ':' or sentence[i] == '：':
+                            action = ''
+                        else:
+                            action += sentence[i]
 
-            diag = ''.join([c for c, t in zip(sentence, tag) if t == 'D'])
+                print('=======dialogues=====')
+                print(dialogues)
+                print('=======dialogues=====')
+
             characters = self.find_item(sentence, tag, 'PER')
             self.scene_character += characters
+
+
             locations = self.find_item(sentence, tag, 'LOC')
+
             if len(locations) != 0:
                 for i in locations:
                     if i not in self.locations_dict:
@@ -37,12 +84,60 @@ class Scene:
                     else:
                         self.locations_dict[i] += 1
 
+            if len(dialogues) != 0:
+                for d in dialogues:
+                    print(d)
+
+                    result = predict_character.get(d)
+                    print(result)
+                    print(characters)
+                    
+                    if result[3] > 0.7 and (result[2] in characters):
+                        character = result[2]
+                    elif result[3] > 0.7 and (result[2] not in characters):
+                        if result[3] > 0.95:
+                            character = result[2]
+                        elif len(characters) != 0:
+                            characters_count = Counter(characters)
+                            character = list(characters_count)[0]
+                        else:
+                            character = "unknown"
+                    elif len(characters) != 0:
+                        characters_count = Counter(characters)
+                        character = list(characters_count)[0]
+                    else:
+                        character = "unknown"
+                    print(character + ' : ' + d)
+                    for x in tmp_contents:
+                        if x[1] == d:
+                            x[0] = character
+            
+            for x in tmp_contents:
+                print(x)
+                self.scene_content.append(x)
+
+            '''
             if len(diag) != 0:
                 if len(characters) != 0:
                     character = characters[0]
                 else:
                     character = "unknown"
                 self.scene_content.append([character, diag])
+                print(character + ' : ' + diag)
+
+
+            print('=======predict=====')
+
+            if len(dialogues) != 0:
+                for d in dialogues:
+                    print(d)
+                    result = predict_character.get(d)
+                    print(result)
+                    character = result[2]
+                    print(character + ' : ' + d)
+                     
+            print('=======predict=====')
+            '''
 
     def load_dict(self):
         # get characters
@@ -56,7 +151,14 @@ class Scene:
         self.nr = list(set(nr))
         self.ns = list(set(ns))
 
+        text = codecs.open('data/location_distribution.txt', 'r', 'utf-8').read().split('\n')
+        for line in text:
+            value = line.split(' ')
+            if len(value[0]) != 0:
+                self.locations_distribution_dict[value[0]] = value[1]
 
+
+      
     def get_character(self):
 
         self.scene_character = list(set(self.scene_character))
@@ -64,6 +166,40 @@ class Scene:
         return self.scene_character
 
     def get_location(self):
+        self.scene_location = sorted(self.locations_dict.items(), key=lambda d: d[1], reverse=True)
+        print('location:')
+        print(self.scene_location)
+        if len(self.scene_location) > 1:
+            if self.scene_location[0][0] != ' ':
+                num = self.scene_location[0][1]
+            elif len(self.scene_location) > 1:
+                num = self.scene_location[1][1]
+            if len(self.scene_location) > 1 and num == self.scene_location[1][1]:
+                if self.scene_location[0][0] != ' ':
+                    location = self.scene_location[0][0]
+                elif len(self.scene_location) > 1:
+                    location = self.scene_location[1][0]
+                for loc in self.scene_location:
+                    if loc[1] == num and (loc[0] in self.locations_distribution_dict):
+                    	if self.locations_distribution_dict[loc[0]] > self.locations_distribution_dict[location]:
+                            location = loc[0]
+                self.scene_location = location
+            else:
+                if self.scene_location[0][0] != ' ':
+                    self.scene_location = self.scene_location[0][0]
+                elif len(self.scene_location) > 1:
+                    self.scene_location = self.scene_location[1][0]
+                #self.scene_location = self.scene_location[0][0]
+        elif len(self.scene_location) == 1 and self.scene_location[0][0]!='' and self.scene_location[0][0]!= ' ':
+            self.scene_location = self.scene_location[0][0]
+        else:
+            scene_location = sorted(self.locations_distribution_dict.items(), key=lambda d: d[1], reverse=True)
+            self.scene_location = scene_location[0][0]
+        print(self.scene_location)
+        return self.scene_location
+        '''
+
+
         self.scene_location = sorted(self.locations_dict.items(), key=lambda d: d[1], reverse=True)
         if len(self.scene_location) != 0:
             self.scene_location = self.scene_location[0][0]
@@ -78,7 +214,7 @@ class Scene:
             self.scene_location = scene_location[0][0]
 
         return self.scene_location
-
+	'''
     def get_content(self):
         self.scene_content = self.trace_talk_character(self.scene_content)
 
@@ -107,7 +243,7 @@ class Scene:
                             next_tag = self.text[j]
                             break
 
-                    if sep == '」' and next_tag == '。':
+                    if sep == '”' and next_tag == '。':
                         break
                     if len(res_c.strip()) > 0:
                         res.append(res_c)
@@ -121,15 +257,26 @@ class Scene:
     def init_tag(self):
         tags = []
         dialog_check = 0
-        for c in self.text:
-            if c == '」':
-                dialog_check = 0
-            if dialog_check == 0:
-                tags.append('O')
-            if dialog_check == 1:
-                tags.append('D')
-            if c == '「':
-                dialog_check = 1
+
+        for line in self.text:
+            tag = []
+            for c in line:
+                if c == '“':
+                    dialog_check = 1
+                    tag.append('D-S')
+                    continue
+                if c == '”':
+                    dialog_check = 0
+                    tag.append('D-E')
+                    continue
+                if dialog_check == 0:
+                    if c in sentence_delimiters:
+                        tag.append('O-E')
+                    else:
+                        tag.append('O')
+                if dialog_check == 1:
+                    tag.append('D')
+            tags.append(tag)
 
         return tags
 
